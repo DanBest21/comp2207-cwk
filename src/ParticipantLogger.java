@@ -5,7 +5,6 @@ import java.util.stream.Collectors;
 
 public class ParticipantLogger
 {
-	
 	private static ParticipantLogger logger = null;
 	
 	private final PrintStream ps;

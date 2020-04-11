@@ -1,4 +1,3 @@
-
 public class Vote
 {
 	private final int participantPort;
