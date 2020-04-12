@@ -1,2 +1,4 @@
-public class Participant {
+public class Participant
+{
+
 }
