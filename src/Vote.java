@@ -1,10 +1,10 @@
-public class Vote
-{
+
+public class Vote {
+
 	private final int participantPort;
 	private final String vote;
 	
-	public Vote(int participantPort, String vote)
-	{
+	public Vote(int participantPort, String vote) {
 		this.participantPort = participantPort;
 		this.vote = vote;
 	}
@@ -21,4 +21,6 @@ public class Vote
 	public String toString() {
 		return "<" + participantPort + ", " + vote + ">";
 	}
+	
+	
 }
