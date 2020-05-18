@@ -5,10 +5,14 @@ import java.io.PrintStream;
 import java.net.*;
 import java.util.*;
 import java.util.concurrent.*;
+import java.util.stream.Collectors;
 
 public class Election
 {
     private final int numberOfRounds;
+
+    private final int participant;
+    private final int[] otherParticipants;
 
     private final Vote vote;
     private final List<Vote> collectedVotes = new ArrayList<>();
@@ -26,6 +30,9 @@ public class Election
     public Election(int participant, int[] otherParticipants, String[] voteOptions, ParticipantLogger logger, int timeout)
     {
         this.numberOfRounds = otherParticipants.length;
+
+        this.participant = participant;
+        this.otherParticipants = otherParticipants;
 
         this.vote = decideVote(participant, voteOptions);
         collectedVotes.add(vote);
@@ -64,9 +71,8 @@ public class Election
 
             pollService.execute(sendVotes);
 
-            // TODO: Using the ExecutorService and Callable/Future - figure out how to get new votes from messages received.
-            Callable<Set<Vote>> retrieveVotes = () -> {
-                Set<Vote> retrievedVotes = new HashSet<>();
+            Callable<List<Vote>> retrieveVotes = () -> {
+                List<Vote> retrievedVotes = new ArrayList<>();
 
                 MessageParser parser = new MessageParser();
                 String message;
@@ -76,10 +82,45 @@ public class Election
                     message = inputConnections.get(portNumber).readLine();
                     logger.messageReceived(portNumber, message);
 
-                    List<Vote>
+                    Vote[] newVotes = parser.parseVotes(message);
+                    logger.votesReceived(portNumber, Arrays.asList(newVotes));
+
+                    retrievedVotes.addAll(Arrays.asList(newVotes));
                 }
+
+                return retrievedVotes;
             };
+
+            Future<List<Vote>> future = pollService.submit(retrieveVotes);
+            List<Vote> retrievedVotes = new ArrayList<>();
+
+            try
+            {
+                retrievedVotes = future.get();
+            }
+            catch (InterruptedException | ExecutionException ex)
+            {
+                ex.printStackTrace();
+            }
+
+            for (Vote newVote : retrievedVotes)
+            {
+                boolean voteAlreadyCollected = false;
+
+                for (Vote vote : collectedVotes)
+                {
+                    if (newVote.getParticipantPort() == vote.getParticipantPort())
+                        voteAlreadyCollected = true;
+                }
+
+                if (!voteAlreadyCollected)
+                    collectedVotes.add(newVote);
+            }
+
+            logger.endRound(i);
         }
+
+        return new Outcome(participant, decideOutcome(collectedVotes), otherParticipants);
     }
 
     private Vote decideVote(int participant, String[] voteOptions)
@@ -88,6 +129,34 @@ public class Election
         int optionNumber = random.nextInt(voteOptions.length);
 
         return new Vote(participant, voteOptions[optionNumber]);
+    }
+
+    private String decideOutcome(List<Vote> votes)
+    {
+        Map<String, Long> tally = votes
+                .stream()
+                .map(Vote::getVote)
+                .collect(Collectors.groupingBy(e -> e, Collectors.counting()));
+
+        String winningVote = "";
+        long winningVoteCount = 0;
+
+        for (String vote : tally.keySet())
+        {
+            if (tally.get(vote) > winningVoteCount ||
+                    (tally.get(vote) == winningVoteCount && vote.compareTo(winningVote) < 0))
+            {
+                winningVote = vote;
+                winningVoteCount = tally.get(vote);
+            }
+        }
+
+        List<Integer> participants = Arrays.stream(otherParticipants).boxed().collect(Collectors.toList());
+        participants.add(participant);
+
+        logger.outcomeDecided(winningVote, participants);
+
+        return winningVote;
     }
 
     private ServerSocket initialise(int portNumber, int timeout)

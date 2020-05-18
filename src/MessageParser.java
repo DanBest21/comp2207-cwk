@@ -50,7 +50,7 @@ public class MessageParser
             return null;
     }
 
-    public Vote[] parseVote(String message) throws IllegalArgumentException
+    public Vote[] parseVotes(String message) throws IllegalArgumentException
     {
         if (parseMessage(message, MessageType.VOTE))
         {

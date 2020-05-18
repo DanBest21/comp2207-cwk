@@ -186,7 +186,7 @@ public class Coordinator
                 }
             }
 
-            out.println(message);
+            out.println(message.toString());
             logger.detailsSent(this.portNumber,
                     participants.keySet().stream()
                             .filter(e -> e != this.portNumber)
@@ -204,7 +204,7 @@ public class Coordinator
                 message.append(option).append(" ");
             }
 
-            out.println(message);
+            out.println(message.toString());
             logger.voteOptionsSent(this.portNumber, Arrays.asList(options));
 
             return message.toString();

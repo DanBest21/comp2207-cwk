@@ -4,6 +4,7 @@ import java.io.InputStreamReader;
 import java.io.PrintStream;
 import java.net.*;
 import java.util.Arrays;
+import java.util.List;
 import java.util.stream.Collectors;
 
 public class Participant
@@ -18,6 +19,8 @@ public class Participant
     private PrintStream out;
 
     private final ParticipantLogger logger = ParticipantLogger.getLogger();
+
+    private Outcome outcome;
 
     public Participant(int coordinatorPort, int loggerPort, int portNumber, int timeout)
     {
@@ -34,6 +37,8 @@ public class Participant
 
             in = new BufferedReader(new InputStreamReader(socket.getInputStream()));
             out = new PrintStream(socket.getOutputStream());
+
+            logger.connectionEstablished(this.coordinatorPort);
         }
         catch (IOException ex)
         {
@@ -55,7 +60,6 @@ public class Participant
             MessageParser parser = new MessageParser();
 
             participant.sendMessage(MessageType.JOIN);
-            participant.getLogger().connectionEstablished(participant.coordinatorPort);
 
             String message;
             int destinationPort = participant.getCoordinatorPort();
@@ -71,6 +75,8 @@ public class Participant
             participant.getLogger().voteOptionsReceived(Arrays.asList(voteOptions));
 
             participant.startElection(participant.getPortNumber(), otherParticipants, voteOptions);
+
+            participant.sendMessage(MessageType.OUTCOME);
         }
         catch (SocketTimeoutException ex)
         {
@@ -112,7 +118,7 @@ public class Participant
                 message = sendJoinRequest();
                 break;
             case OUTCOME:
-                message = "";
+                message = sendOutcome();
                 break;
             default:
                 throw new IllegalArgumentException(type + " is an invalid message type for a participant.");
@@ -127,16 +133,39 @@ public class Participant
 
         message.append(this.portNumber);
 
-        out.println(message);
+        out.println(message.toString());
         logger.joinSent(this.coordinatorPort);
 
         return message.toString();
     }
 
-    public Outcome startElection(int participant, int[] otherParticipants, String[] voteOptions)
+    private String sendOutcome()
+    {
+        StringBuilder message = new StringBuilder("OUTCOME ");
+
+        message.append(this.outcome.getVote()).append(" ");
+
+        message.append(this.outcome.getParticipantPort()).append(" ");
+
+        for (int otherParticipant : this.outcome.getOtherParticipants())
+        {
+            message.append(otherParticipant).append(" ");
+        }
+
+        out.println(message.toString().trim());
+
+        List<Integer> participants = Arrays.stream(this.outcome.getOtherParticipants()).boxed().collect(Collectors.toList());
+        participants.add(this.outcome.getParticipantPort());
+
+        logger.outcomeNotified(this.outcome.getVote(), participants);
+
+        return message.toString().trim();
+    }
+
+    public void startElection(int participant, int[] otherParticipants, String[] voteOptions)
     {
         Election election = new Election(participant, otherParticipants, voteOptions, logger, timeout);
-        return election.holdElection();
+        this.outcome = election.holdElection();
     }
 
     public int getPortNumber() { return portNumber; }
