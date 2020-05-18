@@ -3,11 +3,10 @@ import java.io.IOException;
 import java.io.InputStreamReader;
 import java.io.PrintStream;
 import java.net.*;
-import java.util.Arrays;
 import java.util.List;
-import java.util.stream.Collectors;
 
-public class Participant
+// TODO: Make the participant be able to start before the coordinator.
+public class Participant extends Thread
 {
     private final int coordinatorPort;
     private final int loggerPort;
@@ -18,7 +17,7 @@ public class Participant
     private BufferedReader in;
     private PrintStream out;
 
-    private final ParticipantLogger logger = ParticipantLogger.getLogger();
+    private final ParticipantLogger logger;
 
     private Outcome outcome;
 
@@ -29,11 +28,25 @@ public class Participant
         this.portNumber = portNumber;
         this.timeout = timeout;
 
+        ParticipantLogger tempLogger;
+
+        try
+        {
+            ParticipantLogger.initLogger(this.loggerPort, this.portNumber, this.timeout);
+            tempLogger = ParticipantLogger.getLogger();
+        }
+        catch (IOException ex)
+        {
+            ex.printStackTrace();
+            tempLogger = null;
+        }
+
+        this.logger = tempLogger;
         this.socket = initialise();
 
         try
         {
-            socket.setSoTimeout(timeout);
+            // socket.setSoTimeout(timeout);
 
             in = new BufferedReader(new InputStreamReader(socket.getInputStream()));
             out = new PrintStream(socket.getOutputStream());
@@ -48,39 +61,42 @@ public class Participant
 
     public static void main(String[] args)
     {
-        Participant participant = null;
+        Participant participant = new Participant(Integer.parseInt(args[0]),
+                Integer.parseInt(args[1]),
+                Integer.parseInt(args[2]),
+                Integer.parseInt(args[3]));
 
+        participant.start();
+    }
+
+    public void run()
+    {
         try
         {
-            participant = new Participant(Integer.parseInt(args[0]),
-                    Integer.parseInt(args[1]),
-                    Integer.parseInt(args[2]),
-                    Integer.parseInt(args[3]));
-
             MessageParser parser = new MessageParser();
 
-            participant.sendMessage(MessageType.JOIN);
+            sendMessage(MessageType.JOIN);
 
             String message;
-            int destinationPort = participant.getCoordinatorPort();
+            int destinationPort = coordinatorPort;
 
-            message = participant.getInputStream().readLine();
-            participant.getLogger().messageReceived(destinationPort, message);
-            int[] otherParticipants = parser.parseDetails(message);
-            participant.getLogger().detailsReceived(Arrays.stream(otherParticipants).boxed().collect(Collectors.toList()));
+            message = in.readLine();
+            logger.messageReceived(destinationPort, message);
+            List<Integer> otherParticipants = parser.parseDetails(message);
+            logger.detailsReceived(otherParticipants);
 
-            message = participant.getInputStream().readLine();
-            participant.getLogger().messageReceived(destinationPort, message);
-            String[] voteOptions = parser.parseVoteOptions(message);
-            participant.getLogger().voteOptionsReceived(Arrays.asList(voteOptions));
+            message = in.readLine();
+            logger.messageReceived(destinationPort, message);
+            List<String> voteOptions = parser.parseVoteOptions(message);
+            logger.voteOptionsReceived(voteOptions);
 
-            participant.startElection(participant.getPortNumber(), otherParticipants, voteOptions);
+            startElection(portNumber, otherParticipants, voteOptions);
 
-            participant.sendMessage(MessageType.OUTCOME);
+            sendMessage(MessageType.OUTCOME);
         }
         catch (SocketTimeoutException ex)
         {
-            participant.getLogger().participantCrashed(participant.getCoordinatorPort());
+            logger.participantCrashed(coordinatorPort);
         }
         catch (IOException ex)
         {
@@ -90,21 +106,34 @@ public class Participant
 
     public Socket initialise()
     {
-        try
+        while (true)
         {
-            ParticipantLogger.initLogger(this.loggerPort, this.portNumber, this.timeout);
+            try
+            {
+                Socket socket = new Socket("localhost", this.coordinatorPort);
 
-            Socket socket = new Socket("localhost", this.portNumber);
-            logger.startedListening();
+                // socket.setSoTimeout(this.timeout);
 
-            socket.setSoTimeout(this.timeout);
+                return socket;
+            }
+            catch (ConnectException e)
+            {
+                System.out.println("Coordinator at port number '" + this.coordinatorPort + "' not found. Attempting to reconnect...");
 
-            return socket;
-        }
-        catch (IOException ex)
-        {
-            ex.printStackTrace();
-            return null;
+                try
+                {
+                    Thread.sleep(timeout / 5);
+                }
+                catch (InterruptedException ex)
+                {
+                    ex.printStackTrace();
+                }
+            }
+            catch (IOException ex)
+            {
+                ex.printStackTrace();
+                return null;
+            }
         }
     }
 
@@ -133,10 +162,10 @@ public class Participant
 
         message.append(this.portNumber);
 
-        out.println(message.toString());
+        out.println(message.toString().trim());
         logger.joinSent(this.coordinatorPort);
 
-        return message.toString();
+        return message.toString().trim();
     }
 
     private String sendOutcome()
@@ -154,7 +183,7 @@ public class Participant
 
         out.println(message.toString().trim());
 
-        List<Integer> participants = Arrays.stream(this.outcome.getOtherParticipants()).boxed().collect(Collectors.toList());
+        List<Integer> participants = this.outcome.getOtherParticipants();
         participants.add(this.outcome.getParticipantPort());
 
         logger.outcomeNotified(this.outcome.getVote(), participants);
@@ -162,17 +191,9 @@ public class Participant
         return message.toString().trim();
     }
 
-    public void startElection(int participant, int[] otherParticipants, String[] voteOptions)
+    public void startElection(int participant, List<Integer> otherParticipants, List<String> voteOptions)
     {
         Election election = new Election(participant, otherParticipants, voteOptions, logger, timeout);
         this.outcome = election.holdElection();
     }
-
-    public int getPortNumber() { return portNumber; }
-
-    public int getCoordinatorPort() { return coordinatorPort; }
-
-    public ParticipantLogger getLogger() { return logger; }
-
-    public BufferedReader getInputStream() { return in; }
 }

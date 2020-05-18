@@ -1,19 +1,17 @@
-import java.util.Arrays;
+import java.util.Collections;
 import java.util.List;
-import java.util.Map;
-import java.util.stream.Collectors;
 
 public class Outcome extends Vote
 {
-    private final int[] otherParticipants;
+    private final List<Integer> otherParticipants;
 
-	public Outcome(int participantPort, String vote, int[] otherParticipants)
+	public Outcome(int participantPort, String vote, List<Integer> otherParticipants)
     {
         super(participantPort, vote);
 
+        Collections.sort(otherParticipants);
         this.otherParticipants = otherParticipants;
-        Arrays.sort(otherParticipants);
     }
 
-    public int[] getOtherParticipants() { return otherParticipants; }
+    public List<Integer> getOtherParticipants() { return otherParticipants; }
 }

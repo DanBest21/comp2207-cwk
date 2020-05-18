@@ -1,3 +1,5 @@
+import java.util.ArrayList;
+import java.util.List;
 import java.util.StringTokenizer;
 
 public class MessageParser
@@ -12,17 +14,15 @@ public class MessageParser
             return -1;
     }
 
-    public int[] parseDetails(String message) throws IllegalArgumentException
+    public List<Integer> parseDetails(String message) throws IllegalArgumentException
     {
         if (parseMessage(message, MessageType.DETAILS))
         {
-            int[] participants = new int[tokenizer.countTokens()];
-            int i = 0;
+            List<Integer> participants = new ArrayList<>();
 
             while (tokenizer.hasMoreTokens())
             {
-                participants[i] = Integer.parseInt(tokenizer.nextToken());
-                i++;
+                participants.add(Integer.parseInt(tokenizer.nextToken()));
             }
 
             return participants;
@@ -31,17 +31,15 @@ public class MessageParser
             return null;
     }
 
-    public String[] parseVoteOptions(String message) throws IllegalArgumentException
+    public List<String> parseVoteOptions(String message) throws IllegalArgumentException
     {
         if (parseMessage(message, MessageType.VOTE_OPTIONS))
         {
-            String[] options = new String[tokenizer.countTokens()];
-            int i = 0;
+            List<String> options = new ArrayList<>();
 
             while (tokenizer.hasMoreTokens())
             {
-                options[i] = tokenizer.nextToken();
-                i++;
+                options.add(tokenizer.nextToken());
             }
 
             return options;
@@ -50,17 +48,15 @@ public class MessageParser
             return null;
     }
 
-    public Vote[] parseVotes(String message) throws IllegalArgumentException
+    public List<Vote> parseVotes(String message) throws IllegalArgumentException
     {
         if (parseMessage(message, MessageType.VOTE))
         {
-            Vote[] votes = new Vote[tokenizer.countTokens()];
-            int i = 0;
+            List<Vote> votes = new ArrayList<>();
 
             while (tokenizer.hasMoreTokens())
             {
-                votes[i] = new Vote(Integer.parseInt(tokenizer.nextToken()), tokenizer.nextToken());
-                i++;
+                votes.add(new Vote(Integer.parseInt(tokenizer.nextToken()), tokenizer.nextToken()));
             }
 
             return votes;
@@ -73,16 +69,15 @@ public class MessageParser
     {
         if (parseMessage(message, MessageType.OUTCOME))
         {
-            int participant = Integer.parseInt(tokenizer.nextToken());
             String option = tokenizer.nextToken();
 
-            int[] otherParticipants = new int[tokenizer.countTokens()];
-            int i = 0;
+            int participant = Integer.parseInt(tokenizer.nextToken());
+
+            List<Integer> otherParticipants = new ArrayList<>();
 
             while (tokenizer.hasMoreTokens())
             {
-                otherParticipants[i] = Integer.parseInt(tokenizer.nextToken());
-                i++;
+                otherParticipants.add(Integer.parseInt(tokenizer.nextToken()));
             }
 
             return new Outcome(participant, option, otherParticipants);

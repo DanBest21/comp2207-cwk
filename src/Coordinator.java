@@ -3,21 +3,21 @@ import java.net.*;
 import java.util.*;
 import java.util.stream.Collectors;
 
-public class Coordinator
+public class Coordinator extends Thread
 {
     private final int portNumber;
     private final int loggerPort;
     private final int numberOfParticipants;
     private final int timeout;
-    private final String[] options;
+    private final List<String> options;
 
     private final ServerSocket serverSocket;
     private final Map<Integer, Socket> participants = Collections.synchronizedMap(new HashMap<>());
     private final List<ParticipantThread> threads = Collections.synchronizedList(new ArrayList<>());
 
-    private final CoordinatorLogger logger = CoordinatorLogger.getLogger();
+    private final CoordinatorLogger logger;
 
-    public Coordinator(int portNumber, int loggerPort, int numberOfParticipants, int timeout, String[] options)
+    public Coordinator(int portNumber, int loggerPort, int numberOfParticipants, int timeout, List<String> options)
     {
         this.portNumber = portNumber;
         this.loggerPort = loggerPort;
@@ -25,51 +25,66 @@ public class Coordinator
         this.timeout = timeout;
         this.options = options;
 
+        CoordinatorLogger tempLogger;
+
+        try
+        {
+            CoordinatorLogger.initLogger(this.loggerPort, this.portNumber, this.timeout);
+            tempLogger = CoordinatorLogger.getLogger();
+        }
+        catch (IOException ex)
+        {
+            ex.printStackTrace();
+            tempLogger = null;
+        }
+
+        this.logger = tempLogger;
         this.serverSocket = initialise(portNumber);
     }
 
     public static void main(String[] args)
     {
-        try
+        List<String> options = Collections.synchronizedList(new ArrayList<>());
+        for (int i = 4; i < args.length; i++) { options.add(args[i]); }
+
+        Coordinator coordinator = new Coordinator(Integer.parseInt(args[0]),
+                Integer.parseInt(args[1]),
+                Integer.parseInt(args[2]),
+                Integer.parseInt(args[3]),
+                options);
+
+        coordinator.start();
+    }
+
+    public void run()
+    {
+        for (int i = 0; i < numberOfParticipants; i++)
         {
-            String[] options = new String[args.length - 4];
-            for (int i = 4; i < args.length; i++) { options[i - 4] = args[i]; }
-
-            Coordinator coordinator = new Coordinator(Integer.parseInt(args[0]),
-                    Integer.parseInt(args[1]),
-                    Integer.parseInt(args[2]),
-                    Integer.parseInt(args[3]),
-                    options);
-
-            for (int i = 0; i < coordinator.getNumberOfParticipants(); i++)
+            try
             {
-                Socket socket = coordinator.accept();
-                coordinator.getLogger().connectionAccepted(socket.getPort());
+                Socket socket = serverSocket.accept();
+                logger.connectionAccepted(portNumber);
 
-                ParticipantThread thread = coordinator.new ParticipantThread(socket);
+                ParticipantThread thread = new ParticipantThread(socket);
+                threads.add(thread);
                 thread.start();
-                coordinator.getThreads().add(thread);
             }
+            catch (IOException ex)
+            {
+                ex.printStackTrace();
+            }
+        }
 
-            coordinator.getThreads().forEach(e -> e.sendMessage(MessageType.DETAILS));
-            coordinator.getThreads().forEach(e -> e.sendMessage(MessageType.VOTE_OPTIONS));
-        }
-        catch (RuntimeException ex)
-        {
-            ex.printStackTrace();
-        }
+        threads.forEach(e -> e.sendMessage(MessageType.DETAILS));
+        threads.forEach(e -> e.sendMessage(MessageType.VOTE_OPTIONS));
     }
 
     private ServerSocket initialise(int portNumber)
     {
         try
         {
-            CoordinatorLogger.initLogger(this.loggerPort, this.portNumber, this.timeout);
-
             ServerSocket socket = new ServerSocket(portNumber);
             logger.startedListening(portNumber);
-
-            socket.setSoTimeout(this.timeout);
 
             return socket;
         }
@@ -79,25 +94,6 @@ public class Coordinator
             return null;
         }
     }
-
-    private Socket accept()
-    {
-        try
-        {
-            return this.serverSocket.accept();
-        }
-        catch (IOException ex)
-        {
-            ex.printStackTrace();
-            return null;
-        }
-    }
-
-    public int getNumberOfParticipants() { return numberOfParticipants; }
-
-    public CoordinatorLogger getLogger() { return this.logger; }
-
-    public List<ParticipantThread> getThreads() { return this.threads; }
 
     private class ParticipantThread extends Thread
     {
@@ -113,7 +109,8 @@ public class Coordinator
 
             try
             {
-                socket.setSoTimeout(timeout);
+                // TODO: Sort out timeouts
+                // socket.setSoTimeout(timeout);
 
                 in = new BufferedReader(new InputStreamReader(socket.getInputStream()));
                 out = new PrintStream(socket.getOutputStream());
@@ -144,7 +141,7 @@ public class Coordinator
                 Outcome outcome = parser.parseOutcome(message);
                 logger.outcomeReceived(portNumber, outcome.getVote());
             }
-            catch (SocketTimeoutException ex)
+            catch (SocketException ex)
             {
                 logger.participantCrashed(socket.getPort());
                 ex.printStackTrace();
@@ -178,36 +175,39 @@ public class Coordinator
         {
             StringBuilder message = new StringBuilder("DETAILS ");
 
-            for (int portNumber : participants.keySet())
+            synchronized (participants)
             {
-                if (portNumber != this.portNumber)
-                {
-                    message.append(portNumber).append(" ");
+                for (int portNumber : participants.keySet()) {
+                    if (portNumber != this.portNumber) {
+                        message.append(portNumber).append(" ");
+                    }
                 }
+
+                out.println(message.toString().trim());
+                logger.detailsSent(this.portNumber,
+                        participants.keySet().stream()
+                                .filter(e -> e != this.portNumber)
+                                .collect(Collectors.toList()));
             }
 
-            out.println(message.toString());
-            logger.detailsSent(this.portNumber,
-                    participants.keySet().stream()
-                            .filter(e -> e != this.portNumber)
-                            .collect(Collectors.toList()));
-
-            return message.toString();
+            return message.toString().trim();
         }
 
         private String sendVoteOptions()
         {
             StringBuilder message = new StringBuilder("VOTE_OPTIONS ");
 
-            for (String option : options)
+            synchronized (options)
             {
-                message.append(option).append(" ");
+                for (String option : options) {
+                    message.append(option).append(" ");
+                }
+
+                out.println(message.toString().trim());
+                logger.voteOptionsSent(this.portNumber, options);
             }
 
-            out.println(message.toString());
-            logger.voteOptionsSent(this.portNumber, Arrays.asList(options));
-
-            return message.toString();
+            return message.toString().trim();
         }
     }
 }

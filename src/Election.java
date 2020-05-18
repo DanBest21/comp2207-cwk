@@ -10,13 +10,12 @@ import java.util.stream.Collectors;
 public class Election
 {
     private final int numberOfRounds;
+    private final int timeout;
 
     private final int participant;
-    private final int[] otherParticipants;
 
-    private final Vote vote;
-    private final List<Vote> collectedVotes = new ArrayList<>();
-    private final List<Vote> newVotes = new ArrayList<>();
+    private final List<Vote> collectedVotes = Collections.synchronizedList(new ArrayList<>());
+    private final List<Vote> newVotes = Collections.synchronizedList(new ArrayList<>());
 
     private final Map<Integer, PrintStream> outputConnections = new HashMap<>();
     private final Map<Integer, BufferedReader> inputConnections = new HashMap<>();
@@ -27,22 +26,22 @@ public class Election
 
     private final ExecutorService pollService;
 
-    public Election(int participant, int[] otherParticipants, String[] voteOptions, ParticipantLogger logger, int timeout)
+    public Election(int participant, List<Integer> otherParticipants, List<String> voteOptions, ParticipantLogger logger, int timeout)
     {
-        this.numberOfRounds = otherParticipants.length;
+        this.numberOfRounds = otherParticipants.size();
+        this.timeout = timeout;
 
         this.participant = participant;
-        this.otherParticipants = otherParticipants;
 
-        this.vote = decideVote(participant, voteOptions);
+        Vote vote = decideVote(voteOptions);
         collectedVotes.add(vote);
         newVotes.add(vote);
 
-        this.serverSocket = initialise(participant, timeout);
-
         this.logger = logger;
 
-        this.pollService = Executors.newFixedThreadPool(otherParticipants.length);
+        this.serverSocket = initialise();
+
+        this.pollService = Executors.newFixedThreadPool(otherParticipants.size() * 2);
 
         establishConnections(otherParticipants, timeout);
     }
@@ -56,82 +55,99 @@ public class Election
             Runnable sendVotes = () -> {
                 for (int portNumber : outputConnections.keySet())
                 {
-                    StringBuilder message = new StringBuilder("VOTE ");
-
-                    for (Vote vote : newVotes)
+                    if (!newVotes.isEmpty())
                     {
-                        message.append(vote.getParticipantPort()).append(" ").append(vote.getVote());
-                    }
+                        StringBuilder message = new StringBuilder("VOTE ");
 
-                    outputConnections.get(portNumber).println(message);
-                    logger.votesSent(portNumber, newVotes);
-                    logger.messageSent(portNumber, message.toString());
+                        for (Vote vote : newVotes)
+                        {
+                            message.append(vote.getParticipantPort()).append(" ")
+                                    .append(vote.getVote()).append(" ");
+                        }
+
+                        outputConnections.get(portNumber).println(message.toString().trim());
+                        logger.votesSent(portNumber, newVotes);
+                        logger.messageSent(portNumber, message.toString().trim());
+                    }
                 }
             };
+
+            List<Callable<List<Vote>>> incomingVotes = new ArrayList<>();
+
+            for (int portNumber : inputConnections.keySet())
+            {
+                Callable<List<Vote>> retrieveVotes = () -> {
+                    MessageParser parser = new MessageParser();
+                    String message = inputConnections.get(portNumber).readLine();
+                    logger.messageReceived(portNumber, message);
+
+                    List<Vote> retrievedVotes = parser.parseVotes(message);
+
+                    if (!retrievedVotes.isEmpty())
+                        logger.votesReceived(portNumber, retrievedVotes);
+
+                    return retrievedVotes;
+                };
+
+                incomingVotes.add(retrieveVotes);
+            }
 
             pollService.execute(sendVotes);
 
-            Callable<List<Vote>> retrieveVotes = () -> {
-                List<Vote> retrievedVotes = new ArrayList<>();
-
-                MessageParser parser = new MessageParser();
-                String message;
-
-                for (int portNumber : inputConnections.keySet())
-                {
-                    message = inputConnections.get(portNumber).readLine();
-                    logger.messageReceived(portNumber, message);
-
-                    Vote[] newVotes = parser.parseVotes(message);
-                    logger.votesReceived(portNumber, Arrays.asList(newVotes));
-
-                    retrievedVotes.addAll(Arrays.asList(newVotes));
-                }
-
-                return retrievedVotes;
-            };
-
-            Future<List<Vote>> future = pollService.submit(retrieveVotes);
-            List<Vote> retrievedVotes = new ArrayList<>();
-
             try
             {
-                retrievedVotes = future.get();
+                List<Future<List<Vote>>> futureVotes =
+                        pollService.invokeAll(incomingVotes, timeout, TimeUnit.MILLISECONDS);
+
+                for (Future<List<Vote>> futureVote : futureVotes)
+                {
+                    List<Vote> retrievedVotes;
+
+                    try
+                    {
+                        retrievedVotes = futureVote.get();
+                    }
+                    catch (CancellationException ex)
+                    {
+                        // TODO: Handle failures (everywhere but especially here)
+                        continue;
+                    }
+
+                    newVotes.clear();
+
+                    newVotes.addAll(retrievedVotes.stream()
+                            .filter(vote -> !collectedVotes
+                                    .stream()
+                                    .map(Vote::getParticipantPort)
+                                    .collect(Collectors.toList())
+                                    .contains(vote.getParticipantPort()))
+                            .collect(Collectors.toList()));
+
+                    collectedVotes.addAll(newVotes);
+                }
             }
             catch (InterruptedException | ExecutionException ex)
             {
                 ex.printStackTrace();
             }
 
-            for (Vote newVote : retrievedVotes)
-            {
-                boolean voteAlreadyCollected = false;
-
-                for (Vote vote : collectedVotes)
-                {
-                    if (newVote.getParticipantPort() == vote.getParticipantPort())
-                        voteAlreadyCollected = true;
-                }
-
-                if (!voteAlreadyCollected)
-                    collectedVotes.add(newVote);
-            }
-
             logger.endRound(i);
         }
 
-        return new Outcome(participant, decideOutcome(collectedVotes), otherParticipants);
+        List<Integer> voters = collectedVotes.stream().map(Vote::getParticipantPort).collect(Collectors.toList());
+
+        return new Outcome(participant, decideOutcome(collectedVotes, voters), voters);
     }
 
-    private Vote decideVote(int participant, String[] voteOptions)
+    private Vote decideVote(List<String> voteOptions)
     {
         Random random = new Random();
-        int optionNumber = random.nextInt(voteOptions.length);
+        int optionNumber = random.nextInt(voteOptions.size());
 
-        return new Vote(participant, voteOptions[optionNumber]);
+        return new Vote(participant, voteOptions.get(optionNumber));
     }
 
-    private String decideOutcome(List<Vote> votes)
+    private String decideOutcome(List<Vote> votes, List<Integer> voters)
     {
         Map<String, Long> tally = votes
                 .stream()
@@ -151,20 +167,17 @@ public class Election
             }
         }
 
-        List<Integer> participants = Arrays.stream(otherParticipants).boxed().collect(Collectors.toList());
-        participants.add(participant);
-
-        logger.outcomeDecided(winningVote, participants);
+        logger.outcomeDecided(winningVote, voters);
 
         return winningVote;
     }
 
-    private ServerSocket initialise(int portNumber, int timeout)
+    private ServerSocket initialise()
     {
         try
         {
-            ServerSocket socket = new ServerSocket(portNumber);
-            socket.setSoTimeout(timeout);
+            ServerSocket socket = new ServerSocket(participant);
+            logger.startedListening();
 
             return socket;
         }
@@ -175,44 +188,77 @@ public class Election
         }
     }
 
-    private void establishConnections(int[] otherParticipants, int timeout)
+    private void establishConnections(List<Integer> otherParticipants, int timeout)
     {
-        Runnable acceptConnections = () -> {
-            for (int i = 0; i < otherParticipants.length; i++)
-            {
+        List<Callable<Socket>> outgoingSockets = new ArrayList<>();
+        List<Callable<Socket>> incomingSockets = new ArrayList<>();
+
+        for (Integer participant : otherParticipants)
+        {
+            Callable<Socket> outgoingSocket = () -> {
+                try
+                {
+                    Socket socket = new Socket("localhost", participant);
+
+                    logger.connectionEstablished(participant);
+
+                    return socket;
+                }
+                catch (IOException e)
+                {
+                    e.printStackTrace();
+                    return null;
+                }
+            };
+
+            outgoingSockets.add(outgoingSocket);
+        }
+
+        for (int i = 0; i < otherParticipants.size(); i++)
+        {
+            Callable<Socket> incomingSocket = () -> {
                 try
                 {
                     Socket socket = serverSocket.accept();
-                    socket.setSoTimeout(timeout);
 
                     logger.connectionAccepted(socket.getPort());
 
-                    outputConnections.put(socket.getPort(), new PrintStream(socket.getOutputStream()));
+                    return socket;
                 }
                 catch (IOException ex)
                 {
                     ex.printStackTrace();
+                    return null;
                 }
-            }
-        };
+            };
 
-        pollService.execute(acceptConnections);
+            incomingSockets.add(incomingSocket);
+        }
 
-        for (int i = 0; i < otherParticipants.length; i++)
+        try
         {
-            try
-            {
-                Socket socket = new Socket("localhost", otherParticipants[i]);
-                socket.setSoTimeout(timeout);
+            List<Future<Socket>> futureOutgoing = pollService.invokeAll(outgoingSockets, timeout, TimeUnit.MILLISECONDS);
+            List<Future<Socket>> futureIncoming = pollService.invokeAll(incomingSockets, timeout, TimeUnit.MILLISECONDS);
 
-                logger.connectionEstablished(otherParticipants[i]);
-
-                inputConnections.put(otherParticipants[i], new BufferedReader(new InputStreamReader(socket.getInputStream())));
-            }
-            catch (IOException e)
+            for (Future<Socket> futureSocket : futureOutgoing)
             {
-                e.printStackTrace();
+                outputConnections.put(futureSocket.get().getPort(),
+                        new PrintStream(futureSocket.get().getOutputStream()));
             }
+
+            for (Future<Socket> futureSocket : futureIncoming)
+            {
+                inputConnections.put(futureSocket.get().getPort(),
+                        new BufferedReader(new InputStreamReader(futureSocket.get().getInputStream())));
+            }
+        }
+        catch (CancellationException ex)
+        {
+            // TODO: Handle timeouts.
+        }
+        catch (InterruptedException | ExecutionException | IOException ex)
+        {
+            ex.printStackTrace();
         }
     }
 }
