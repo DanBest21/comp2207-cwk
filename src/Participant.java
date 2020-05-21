@@ -4,9 +4,9 @@ import java.io.InputStreamReader;
 import java.io.PrintStream;
 import java.net.*;
 import java.util.List;
+import java.util.concurrent.*;
 
-// TODO: Make the participant be able to start before the coordinator.
-public class Participant extends Thread
+public class Participant
 {
     private final int coordinatorPort;
     private final int loggerPort;
@@ -46,8 +46,6 @@ public class Participant extends Thread
 
         try
         {
-            // socket.setSoTimeout(timeout);
-
             in = new BufferedReader(new InputStreamReader(socket.getInputStream()));
             out = new PrintStream(socket.getOutputStream());
 
@@ -66,42 +64,71 @@ public class Participant extends Thread
                 Integer.parseInt(args[2]),
                 Integer.parseInt(args[3]));
 
-        participant.start();
+        participant.run();
     }
 
     public void run()
     {
+        MessageParser parser = new MessageParser();
+
+        sendMessage(MessageType.JOIN);
+
+        int destinationPort = coordinatorPort;
+
+        ExecutorService messageService = Executors.newSingleThreadExecutor();
+
+        Callable<List<Integer>> retrieveParticipants = () -> {
+            String message = in.readLine();
+            logger.messageReceived(destinationPort, message);
+            return parser.parseDetails(message);
+        };
+
+        Future<List<Integer>> futureParticipants = messageService.submit(retrieveParticipants);
+
+        List<Integer> otherParticipants = null;
+
         try
         {
-            MessageParser parser = new MessageParser();
-
-            sendMessage(MessageType.JOIN);
-
-            String message;
-            int destinationPort = coordinatorPort;
-
-            message = in.readLine();
-            logger.messageReceived(destinationPort, message);
-            List<Integer> otherParticipants = parser.parseDetails(message);
+            otherParticipants = futureParticipants.get();
             logger.detailsReceived(otherParticipants);
-
-            message = in.readLine();
-            logger.messageReceived(destinationPort, message);
-            List<String> voteOptions = parser.parseVoteOptions(message);
-            logger.voteOptionsReceived(voteOptions);
-
-            startElection(portNumber, otherParticipants, voteOptions);
-
-            sendMessage(MessageType.OUTCOME);
         }
-        catch (SocketTimeoutException ex)
-        {
-            logger.participantCrashed(coordinatorPort);
-        }
-        catch (IOException ex)
+        catch (InterruptedException | ExecutionException ex)
         {
             ex.printStackTrace();
+            return;
         }
+
+        Callable<List<String>> retrieveOptions = () -> {
+            String message = in.readLine();
+            logger.messageReceived(destinationPort, message);
+            return parser.parseVoteOptions(message);
+        };
+
+        Future<List<String>> futureOptions = messageService.submit(retrieveOptions);
+
+        List<String> voteOptions = null;
+
+        try
+        {
+            voteOptions = futureOptions.get(timeout, TimeUnit.MILLISECONDS);
+            logger.voteOptionsReceived(voteOptions);
+        }
+        catch (TimeoutException ex)
+        {
+            logger.participantCrashed(coordinatorPort);
+            return;
+        }
+        catch (InterruptedException | ExecutionException ex)
+        {
+            ex.printStackTrace();
+            return;
+        }
+
+        messageService.shutdown();
+
+        startElection(portNumber, otherParticipants, voteOptions);
+
+        sendMessage(MessageType.OUTCOME);
     }
 
     public Socket initialise()
@@ -111,8 +138,6 @@ public class Participant extends Thread
             try
             {
                 Socket socket = new Socket("localhost", this.coordinatorPort);
-
-                // socket.setSoTimeout(this.timeout);
 
                 return socket;
             }
@@ -174,17 +199,14 @@ public class Participant extends Thread
 
         message.append(this.outcome.getVote()).append(" ");
 
-        message.append(this.outcome.getParticipantPort()).append(" ");
+        List<Integer> participants = this.outcome.getOtherParticipants();
 
-        for (int otherParticipant : this.outcome.getOtherParticipants())
+        for (int otherParticipant : participants)
         {
             message.append(otherParticipant).append(" ");
         }
 
         out.println(message.toString().trim());
-
-        List<Integer> participants = this.outcome.getOtherParticipants();
-        participants.add(this.outcome.getParticipantPort());
 
         logger.outcomeNotified(this.outcome.getVote(), participants);
 

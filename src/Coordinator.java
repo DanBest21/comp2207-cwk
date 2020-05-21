@@ -1,9 +1,10 @@
 import java.io.*;
 import java.net.*;
 import java.util.*;
+import java.util.concurrent.*;
 import java.util.stream.Collectors;
 
-public class Coordinator extends Thread
+public class Coordinator
 {
     private final int portNumber;
     private final int loggerPort;
@@ -53,7 +54,7 @@ public class Coordinator extends Thread
                 Integer.parseInt(args[3]),
                 options);
 
-        coordinator.start();
+        coordinator.run();
     }
 
     public void run()
@@ -75,8 +76,15 @@ public class Coordinator extends Thread
             }
         }
 
-        threads.forEach(e -> e.sendMessage(MessageType.DETAILS));
-        threads.forEach(e -> e.sendMessage(MessageType.VOTE_OPTIONS));
+        ScheduledExecutorService senderService = Executors.newSingleThreadScheduledExecutor();
+
+        Runnable sendDetailsAndOptions = () -> {
+            threads.forEach(e -> e.sendMessage(MessageType.DETAILS));
+            threads.forEach(e -> e.sendMessage(MessageType.VOTE_OPTIONS));
+        };
+
+        senderService.schedule(sendDetailsAndOptions, timeout, TimeUnit.MILLISECONDS);
+        senderService.shutdown();
     }
 
     private ServerSocket initialise(int portNumber)
@@ -109,9 +117,6 @@ public class Coordinator extends Thread
 
             try
             {
-                // TODO: Sort out timeouts
-                // socket.setSoTimeout(timeout);
-
                 in = new BufferedReader(new InputStreamReader(socket.getInputStream()));
                 out = new PrintStream(socket.getOutputStream());
             }
@@ -129,22 +134,47 @@ public class Coordinator extends Thread
                 MessageParser parser = new MessageParser();
                 String message;
 
-                message = in.readLine();
-                logger.messageReceived(socket.getPort(), message);
-                portNumber = parser.parseJoinRequest(message);
-                logger.joinReceived(portNumber);
+                ExecutorService joinService = Executors.newSingleThreadExecutor();
 
-                participants.put(portNumber, socket);
+                Callable<Integer> retrieveJoinRequest = () -> {
+                    String joinMessage;
+
+                    joinMessage = in.readLine();
+                    logger.messageReceived(socket.getPort(), joinMessage);
+                    return parser.parseJoinRequest(joinMessage);
+                };
+
+                Future<Integer> futureRequest = joinService.submit(retrieveJoinRequest);
+
+                try
+                {
+                    portNumber = futureRequest.get(timeout, TimeUnit.MILLISECONDS);
+
+                    synchronized (participants)
+                    {
+                        participants.put(portNumber, socket);
+                    }
+                }
+                // Handle timeout by closing the socket and interrupting this thread.
+                catch (TimeoutException ex)
+                {
+                    logger.participantCrashed(portNumber);
+                    in.close();
+                    out.close();
+                    socket.close();
+                    this.interrupt();
+                }
+                catch (InterruptedException | ExecutionException ex)
+                {
+                    ex.printStackTrace();
+                }
+
+                joinService.shutdown();
 
                 message = in.readLine();
                 logger.messageReceived(portNumber, message);
                 Outcome outcome = parser.parseOutcome(message);
                 logger.outcomeReceived(portNumber, outcome.getVote());
-            }
-            catch (SocketException ex)
-            {
-                logger.participantCrashed(socket.getPort());
-                ex.printStackTrace();
             }
             catch (IOException ex)
             {

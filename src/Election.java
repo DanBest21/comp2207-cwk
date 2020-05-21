@@ -17,8 +17,8 @@ public class Election
     private final List<Vote> collectedVotes = Collections.synchronizedList(new ArrayList<>());
     private final List<Vote> newVotes = Collections.synchronizedList(new ArrayList<>());
 
-    private final Map<Integer, PrintStream> outputConnections = new HashMap<>();
-    private final Map<Integer, BufferedReader> inputConnections = new HashMap<>();
+    private final Map<Integer, PrintStream> outputConnections = Collections.synchronizedMap(new HashMap<>());
+    private final Map<Integer, BufferedReader> inputConnections = Collections.synchronizedMap(new HashMap<>());
 
     private final ServerSocket serverSocket;
 
@@ -41,102 +41,203 @@ public class Election
 
         this.serverSocket = initialise();
 
-        this.pollService = Executors.newFixedThreadPool(otherParticipants.size() * 2);
+        this.pollService = Executors.newWorkStealingPool();
 
-        establishConnections(otherParticipants, timeout);
+        establishConnections(otherParticipants);
     }
 
     public Outcome holdElection()
     {
+        ScheduledExecutorService roundService = Executors.newSingleThreadScheduledExecutor();
+
         for (int i = 1; i <= numberOfRounds; i++)
         {
-            logger.beginRound(i);
+            int roundNumber = i;
 
-            Runnable sendVotes = () -> {
-                for (int portNumber : outputConnections.keySet())
-                {
-                    if (!newVotes.isEmpty())
-                    {
-                        StringBuilder message = new StringBuilder("VOTE ");
-
-                        for (Vote vote : newVotes)
-                        {
-                            message.append(vote.getParticipantPort()).append(" ")
-                                    .append(vote.getVote()).append(" ");
-                        }
-
-                        outputConnections.get(portNumber).println(message.toString().trim());
-                        logger.votesSent(portNumber, newVotes);
-                        logger.messageSent(portNumber, message.toString().trim());
-                    }
-                }
+            Callable<Boolean> round = () -> {
+                startRound(roundNumber);
+                return true;
             };
 
-            List<Callable<List<Vote>>> incomingVotes = new ArrayList<>();
-
-            for (int portNumber : inputConnections.keySet())
-            {
-                Callable<List<Vote>> retrieveVotes = () -> {
-                    MessageParser parser = new MessageParser();
-                    String message = inputConnections.get(portNumber).readLine();
-                    logger.messageReceived(portNumber, message);
-
-                    List<Vote> retrievedVotes = parser.parseVotes(message);
-
-                    if (!retrievedVotes.isEmpty())
-                        logger.votesReceived(portNumber, retrievedVotes);
-
-                    return retrievedVotes;
-                };
-
-                incomingVotes.add(retrieveVotes);
-            }
-
-            pollService.execute(sendVotes);
+            Future<Boolean> futureBlock = roundService.schedule(round, timeout, TimeUnit.MILLISECONDS);
 
             try
             {
-                List<Future<List<Vote>>> futureVotes =
-                        pollService.invokeAll(incomingVotes, timeout, TimeUnit.MILLISECONDS);
-
-                for (Future<List<Vote>> futureVote : futureVotes)
-                {
-                    List<Vote> retrievedVotes;
-
-                    try
-                    {
-                        retrievedVotes = futureVote.get();
-                    }
-                    catch (CancellationException ex)
-                    {
-                        // TODO: Handle failures (everywhere but especially here)
-                        continue;
-                    }
-
-                    newVotes.clear();
-
-                    newVotes.addAll(retrievedVotes.stream()
-                            .filter(vote -> !collectedVotes
-                                    .stream()
-                                    .map(Vote::getParticipantPort)
-                                    .collect(Collectors.toList())
-                                    .contains(vote.getParticipantPort()))
-                            .collect(Collectors.toList()));
-
-                    collectedVotes.addAll(newVotes);
-                }
+                Boolean waitForRound = futureBlock.get();
             }
             catch (InterruptedException | ExecutionException ex)
             {
                 ex.printStackTrace();
             }
-
-            logger.endRound(i);
         }
 
-        List<Integer> voters = collectedVotes.stream().map(Vote::getParticipantPort).collect(Collectors.toList());
+        roundService.shutdown();
+        pollService.shutdown();
+
+//        for (BufferedReader in : inputConnections.values())
+//        {
+//            try
+//            {
+//                in.close();
+//            }
+//            catch (IOException ex)
+//            {
+//                ex.printStackTrace();
+//            }
+//        }
+//
+//        for (PrintStream out : outputConnections.values())
+//        {
+//            out.close();
+//        }
+
+        List<Integer> voters = collectedVotes.stream().map(Vote::getParticipantPort).sorted().collect(Collectors.toList());
 
         return new Outcome(participant, decideOutcome(collectedVotes, voters), voters);
+    }
+
+    public void startRound(int roundNumber)
+    {
+        logger.beginRound(roundNumber);
+
+        Callable<Boolean> sendVotes = () -> {
+            for (int portNumber : outputConnections.keySet())
+            {
+                StringBuilder message = new StringBuilder("VOTE ");
+
+                for (Vote vote : newVotes)
+                {
+                    message.append(vote.getParticipantPort()).append(" ")
+                            .append(vote.getVote()).append(" ");
+                }
+
+                outputConnections.get(portNumber).println(message.toString().trim());
+                logger.votesSent(portNumber, newVotes);
+                logger.messageSent(portNumber, message.toString().trim());
+            }
+
+            return true;
+        };
+
+        List<Callable<VoteResponse>> incomingVotes = new ArrayList<>();
+
+        for (int portNumber : inputConnections.keySet())
+        {
+            Callable<VoteResponse> retrieveVotes = () -> {
+                MessageParser parser = new MessageParser();
+
+                String message = inputConnections.get(portNumber).readLine();
+
+                if (roundNumber != 1)
+                    logger.messageReceived(portNumber, message);
+
+                List<Vote> retrievedVotes = parser.parseVotes(message);
+                VoteResponse voteResponse;
+
+                if (roundNumber == 1 && retrievedVotes.size() == 1)
+                {
+                    BufferedReader reader = inputConnections.remove(portNumber);
+
+                    int participant = retrievedVotes.get(0).getParticipantPort();
+
+                    inputConnections.put(participant, reader);
+
+                    logger.messageReceived(participant, message);
+                    logger.votesReceived(participant, retrievedVotes);
+
+                    voteResponse = new VoteResponse(participant);
+                    voteResponse.setVotes(retrievedVotes);
+                }
+                else if (!retrievedVotes.isEmpty())
+                {
+                    logger.votesReceived(portNumber, retrievedVotes);
+
+                    voteResponse = new VoteResponse(portNumber);
+                    voteResponse.setVotes(retrievedVotes);
+                }
+                else
+                {
+                    voteResponse = new VoteResponse(portNumber);
+                }
+
+                return voteResponse;
+            };
+
+            incomingVotes.add(retrieveVotes);
+        }
+
+        Future<Boolean> futureSent = pollService.submit(sendVotes);
+
+        try
+        {
+            List<Future<VoteResponse>> futureVotes =
+                    pollService.invokeAll(incomingVotes, timeout, TimeUnit.MILLISECONDS);
+
+            List<Integer> participantsResponded = new ArrayList<>();
+
+            boolean messagesSent = futureSent.get();
+
+            newVotes.clear();
+
+            List<VoteResponse> voteResponses = new ArrayList<>();
+
+            for (Future<VoteResponse> futureVote : futureVotes)
+            {
+                try
+                {
+                    VoteResponse voteResponse = futureVote.get();
+                    voteResponses.add(voteResponse);
+                }
+                catch (CancellationException ignored) { }
+            }
+
+            for (VoteResponse voteResponse : voteResponses)
+            {
+                List<Vote> retrievedVotes = voteResponse.getVotes();
+
+                participantsResponded.add(voteResponse.getParticipant());
+
+                newVotes.addAll(retrievedVotes.stream()
+                        .filter(vote -> !collectedVotes
+                                .stream()
+                                .map(Vote::getParticipantPort)
+                                .collect(Collectors.toList())
+                                .contains(vote.getParticipantPort()))
+                        .filter(vote -> !newVotes
+                                .stream()
+                                .map(Vote::getParticipantPort)
+                                .collect(Collectors.toList())
+                                .contains(vote.getParticipantPort()))
+                        .collect(Collectors.toList()));
+            }
+
+            System.out.println("Number of participants: " + participantsResponded.size());
+
+            List<Integer> crashedParticipants = new ArrayList<>();
+
+            for (int participant : inputConnections.keySet())
+            {
+                if (!participantsResponded.contains(participant))
+                {
+                    logger.participantCrashed(participant);
+                    crashedParticipants.add(participant);
+                }
+            }
+
+            for (int participant : crashedParticipants)
+            {
+                inputConnections.remove(participant);
+                outputConnections.remove(participant);
+            }
+
+            collectedVotes.addAll(newVotes);
+        }
+        catch (InterruptedException | ExecutionException ex)
+        {
+            ex.printStackTrace();
+        }
+
+        logger.endRound(roundNumber);
     }
 
     private Vote decideVote(List<String> voteOptions)
@@ -188,42 +289,51 @@ public class Election
         }
     }
 
-    private void establishConnections(List<Integer> otherParticipants, int timeout)
+    private void establishConnections(List<Integer> otherParticipants)
     {
-        List<Callable<Socket>> outgoingSockets = new ArrayList<>();
-        List<Callable<Socket>> incomingSockets = new ArrayList<>();
+        List<Callable<Integer>> callablePorts = new ArrayList<>();
 
         for (Integer participant : otherParticipants)
         {
-            Callable<Socket> outgoingSocket = () -> {
+            Callable<Integer> outgoingSocket = () -> {
                 try
                 {
                     Socket socket = new Socket("localhost", participant);
 
                     logger.connectionEstablished(participant);
 
-                    return socket;
+                    outputConnections.put(participant,
+                            new PrintStream(socket.getOutputStream()));
+
+                    return participant;
                 }
                 catch (IOException e)
                 {
                     e.printStackTrace();
                     return null;
                 }
+                catch (CancellationException ex)
+                {
+                    return null;
+                }
             };
 
-            outgoingSockets.add(outgoingSocket);
+            callablePorts.add(outgoingSocket);
         }
 
         for (int i = 0; i < otherParticipants.size(); i++)
         {
-            Callable<Socket> incomingSocket = () -> {
+            Callable<Integer> incomingSocket = () -> {
                 try
                 {
                     Socket socket = serverSocket.accept();
 
                     logger.connectionAccepted(socket.getPort());
 
-                    return socket;
+                    inputConnections.put(socket.getPort(),
+                            new BufferedReader(new InputStreamReader(socket.getInputStream())));
+
+                    return socket.getPort();
                 }
                 catch (IOException ex)
                 {
@@ -232,31 +342,35 @@ public class Election
                 }
             };
 
-            incomingSockets.add(incomingSocket);
+            callablePorts.add(incomingSocket);
         }
 
         try
         {
-            List<Future<Socket>> futureOutgoing = pollService.invokeAll(outgoingSockets, timeout, TimeUnit.MILLISECONDS);
-            List<Future<Socket>> futureIncoming = pollService.invokeAll(incomingSockets, timeout, TimeUnit.MILLISECONDS);
+            List<Future<Integer>> futurePortNumbers = pollService.invokeAll(callablePorts, timeout, TimeUnit.MILLISECONDS);
+            List<Integer> portNumbers = new ArrayList<>();
 
-            for (Future<Socket> futureSocket : futureOutgoing)
+            for (Future<Integer> futureParticipant : futurePortNumbers)
             {
-                outputConnections.put(futureSocket.get().getPort(),
-                        new PrintStream(futureSocket.get().getOutputStream()));
+                try
+                {
+                    int portNumber = futureParticipant.get();
+                    portNumbers.add(portNumber);
+                }
+                catch (CancellationException ignored) { }
+                catch (InterruptedException | ExecutionException ex)
+                {
+                    ex.printStackTrace();
+                }
             }
 
-            for (Future<Socket> futureSocket : futureIncoming)
+            for (int participant : otherParticipants)
             {
-                inputConnections.put(futureSocket.get().getPort(),
-                        new BufferedReader(new InputStreamReader(futureSocket.get().getInputStream())));
+                if (!portNumbers.contains(participant))
+                    logger.participantCrashed(participant);
             }
         }
-        catch (CancellationException ex)
-        {
-            // TODO: Handle timeouts.
-        }
-        catch (InterruptedException | ExecutionException | IOException ex)
+        catch (InterruptedException ex)
         {
             ex.printStackTrace();
         }
