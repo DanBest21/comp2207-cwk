@@ -74,23 +74,6 @@ public class Election
         roundService.shutdown();
         pollService.shutdown();
 
-//        for (BufferedReader in : inputConnections.values())
-//        {
-//            try
-//            {
-//                in.close();
-//            }
-//            catch (IOException ex)
-//            {
-//                ex.printStackTrace();
-//            }
-//        }
-//
-//        for (PrintStream out : outputConnections.values())
-//        {
-//            out.close();
-//        }
-
         List<Integer> voters = collectedVotes.stream().map(Vote::getParticipantPort).sorted().collect(Collectors.toList());
 
         return new Outcome(participant, decideOutcome(collectedVotes, voters), voters);
@@ -211,8 +194,6 @@ public class Election
                         .collect(Collectors.toList()));
             }
 
-            System.out.println("Number of participants: " + participantsResponded.size());
-
             List<Integer> crashedParticipants = new ArrayList<>();
 
             for (int participant : inputConnections.keySet())
@@ -307,13 +288,13 @@ public class Election
 
                     return participant;
                 }
+                catch (CancellationException | ConnectException ex)
+                {
+                    return null;
+                }
                 catch (IOException e)
                 {
                     e.printStackTrace();
-                    return null;
-                }
-                catch (CancellationException ex)
-                {
                     return null;
                 }
             };
