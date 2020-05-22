@@ -113,6 +113,7 @@ public class Participant
             voteOptions = futureOptions.get(timeout, TimeUnit.MILLISECONDS);
             logger.voteOptionsReceived(voteOptions);
         }
+        // Handle the potential timeout that may occur between the Coordinator sending the DETAILS and the VOTE_OPTIONS.
         catch (TimeoutException ex)
         {
             logger.participantCrashed(coordinatorPort);

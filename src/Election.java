@@ -48,12 +48,14 @@ public class Election
 
     public Outcome holdElection()
     {
+        // Schedule each round so that each consecutive round starts after the timeout period so participants are (roughly) in sync with each other.
         ScheduledExecutorService roundService = Executors.newSingleThreadScheduledExecutor();
 
         for (int i = 1; i <= numberOfRounds; i++)
         {
             int roundNumber = i;
 
+            // Return a boolean so that we can block on the Future.get().
             Callable<Boolean> round = () -> {
                 startRound(roundNumber);
                 return true;
@@ -117,6 +119,8 @@ public class Election
                 List<Vote> retrievedVotes = parser.parseVotes(message);
                 VoteResponse voteResponse;
 
+                // If this is the first round, we need to use the response received to determine the correct ID of this input socket.
+                // Use this information to update the inputConnections map appropriately.
                 if (roundNumber == 1 && retrievedVotes.size() == 1)
                 {
                     BufferedReader reader = inputConnections.remove(portNumber);
@@ -158,6 +162,7 @@ public class Election
 
             List<Integer> participantsResponded = new ArrayList<>();
 
+            // This boolean is not used, but allows us to ensure that the send task has either complete or timed out by this stage.
             boolean messagesSent = futureSent.get();
 
             newVotes.clear();
@@ -180,6 +185,8 @@ public class Election
 
                 participantsResponded.add(voteResponse.getParticipant());
 
+                // For every new vote received, find all of the votes that aren't already present in the newVotes or collectedVotes
+                // arrays, and add them to newVotes.
                 newVotes.addAll(retrievedVotes.stream()
                         .filter(vote -> !collectedVotes
                                 .stream()
@@ -196,6 +203,7 @@ public class Election
 
             List<Integer> crashedParticipants = new ArrayList<>();
 
+            // Find all of the participants that have crashed over the course of this round and remove them from both socket maps.
             for (int participant : inputConnections.keySet())
             {
                 if (!participantsResponded.contains(participant))
@@ -239,6 +247,7 @@ public class Election
         String winningVote = "";
         long winningVoteCount = 0;
 
+        // Determine the outcome by tallying up all the votes, and in the event of a tie, picking the earliest value in lexicographic order.
         for (String vote : tally.keySet())
         {
             if (tally.get(vote) > winningVoteCount ||
@@ -345,6 +354,7 @@ public class Election
                 }
             }
 
+            // For every other participant sent by the Coordinator that has not now opened a connection to this participant, log it as having crashed.
             for (int participant : otherParticipants)
             {
                 if (!portNumbers.contains(participant))

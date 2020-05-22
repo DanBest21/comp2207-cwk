@@ -42,6 +42,7 @@ public class UDPLoggerClient
 	 */
 	public void logToServer(String message) throws IOException
 	{
+		// Use a SingleThreadExecutor to ensure that the acknowledgement we receive belongs to this message.
 		Runnable logToServer = () -> {
 			ExecutorService logServiceModular = Executors.newSingleThreadExecutor();
 

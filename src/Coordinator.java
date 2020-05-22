@@ -76,6 +76,7 @@ public class Coordinator
             }
         }
 
+        // Wait the timeout to ensure that all threads are at the point where they can receive the DETAILS and VOTE_OPTIONS.
         ScheduledExecutorService senderService = Executors.newSingleThreadScheduledExecutor();
 
         Runnable sendDetailsAndOptions = () -> {

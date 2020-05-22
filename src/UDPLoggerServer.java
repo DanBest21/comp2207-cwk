@@ -75,6 +75,7 @@ public class UDPLoggerServer
                 writer.println(id + " " + System.currentTimeMillis() + " " + message.toString().trim());
                 writer.flush();
 
+                // Send back "ACK" to acknowledge the message has been received.
                 InetAddress address = packet.getAddress();
                 int senderPort = packet.getPort();
                 String ack = "ACK";
