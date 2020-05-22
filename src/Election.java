@@ -123,11 +123,16 @@ public class Election
                 // Use this information to update the inputConnections map appropriately.
                 if (roundNumber == 1 && retrievedVotes.size() == 1)
                 {
-                    BufferedReader reader = inputConnections.remove(portNumber);
+                    int participant;
 
-                    int participant = retrievedVotes.get(0).getParticipantPort();
+                    synchronized (inputConnections)
+                    {
+                        BufferedReader reader = inputConnections.remove(portNumber);
 
-                    inputConnections.put(participant, reader);
+                        participant = retrievedVotes.get(0).getParticipantPort();
+
+                        inputConnections.put(participant, reader);
+                    }
 
                     logger.messageReceived(participant, message);
                     logger.votesReceived(participant, retrievedVotes);
@@ -358,7 +363,9 @@ public class Election
             for (int participant : otherParticipants)
             {
                 if (!portNumbers.contains(participant))
+                {
                     logger.participantCrashed(participant);
+                }
             }
         }
         catch (InterruptedException ex)
