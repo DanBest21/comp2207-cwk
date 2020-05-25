@@ -64,7 +64,7 @@ public class Coordinator
             try
             {
                 Socket socket = serverSocket.accept();
-                logger.connectionAccepted(portNumber);
+                logger.connectionAccepted(socket.getPort());
 
                 ParticipantThread thread = new ParticipantThread(socket);
                 threads.add(thread);
@@ -142,7 +142,10 @@ public class Coordinator
 
                     joinMessage = in.readLine();
                     logger.messageReceived(socket.getPort(), joinMessage);
-                    return parser.parseJoinRequest(joinMessage);
+                    int joinRequest = parser.parseJoinRequest(joinMessage);
+                    logger.joinReceived(joinRequest);
+
+                    return joinRequest;
                 };
 
                 Future<Integer> futureRequest = joinService.submit(retrieveJoinRequest);
